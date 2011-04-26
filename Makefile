@@ -1,16 +1,20 @@
 CC = gcc
 CFLAGS = -Wall -O2 -g
-OBJS = main.o comm.o
+OBJS = main.o comm.o serial.o usb.o
 TARGET= h8flash
 
 all: h8flash
 
-$(TARGET): main.o comm.o
-	$(CC) -o $(TARGET) $(OBJS)
+$(TARGET): $(OBJS)
+	$(CC) -o $(TARGET) $(OBJS) -lusb
 
 main.o: main.c h8flash.h
 
 comm.o: comm.c h8flash.h
+
+serial.o: serial.c h8flash.h
+
+usb.o: usb.c
 
 .phony: clean
 

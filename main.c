@@ -11,22 +11,15 @@
 #include <stdio.h>
 #include <getopt.h>
 #include <stddef.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/mman.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
-#include <signal.h>
-#include <libgen.h>
+#include <errno.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include "h8flash.h"
 
 #define SREC_MAXLEN (256*2 + 4 + 1)
-
-#define VERBOSE_PRINT(...) do { if (verbose) printf(__VA_ARGS__); } while(0)
 
 int verbose = 0;
 
@@ -36,16 +29,17 @@ const static struct option long_options[] = {
 	{"freq", required_argument, NULL, 'f'},
 	{"binary", no_argument, NULL, 'b'},
 	{"verbose", no_argument, NULL, 'V'},
+	{"list", no_argument, NULL, 'l'},
 	{0, 0, 0, 0}
 };
 
 static void usage(void)
 {
-	puts(PROGNAME " [-p serial port][-f input clock frequency][-b][--userboot] filename");
+	puts(PROGNAME " [-p serial port][-f input clock frequency][-b][--userboot][-l] filename");
 }
 
 /* read raw binary */
-static int write_binary(FILE *fp, struct writeinfo_t *writeinfo, int ser_fd)
+static int write_binary(FILE *fp, struct writeinfo_t *writeinfo, struct port_t *p)
 {
 	int fno;
 	struct stat bin_st;
@@ -57,10 +51,10 @@ static int write_binary(FILE *fp, struct writeinfo_t *writeinfo, int ser_fd)
 	fstat(fno, &bin_st);
 	bin_len = bin_st.st_size;
 
-	if ((bin_buf = (char *)mmap(NULL, bin_len, PROT_READ, MAP_SHARED, fno, 0)) == MAP_FAILED)
+	if ((bin_buf = (unsigned char *)mmap(NULL, bin_len, PROT_READ, MAP_SHARED, fno, 0)) == MAP_FAILED)
 		goto error_perror;
 	writeinfo->area.end = bin_len - 1;
-	if (!write_rom(ser_fd, bin_buf, writeinfo))
+	if (!write_rom(p, bin_buf, writeinfo))
 		goto error;
 	munmap(bin_buf, bin_len);
 	fclose(fp);
@@ -75,11 +69,11 @@ static int write_binary(FILE *fp, struct writeinfo_t *writeinfo, int ser_fd)
 }
 
 /* read srec binary */
-static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, int ser_fd)
+static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, struct port_t *p)
 {
 	unsigned char *romimage = NULL;
 	unsigned char *bufp;
-	unsigned long last_addr = 0;
+	unsigned int last_addr = 0;
 	int buff_size;
 	static char linebuf[SREC_MAXLEN + 1];
 	char *lp;
@@ -91,7 +85,7 @@ static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, int ser_fd)
 	int r = 0;
 	int l;
 
-	romimage = (char *)malloc(writeinfo->area.end - writeinfo->area.start + 1);
+	romimage = (unsigned char *)malloc(writeinfo->area.end - writeinfo->area.start + 1);
 	if (!romimage) {
 		perror(PROGNAME);
 		goto error;
@@ -131,7 +125,7 @@ static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, int ser_fd)
 			fprintf(stderr, "srec address %08x is out of romarea\n", addr);
 			goto error;
 		}
-		bufp = romimage + addr;
+		bufp = romimage + addr - writeinfo->area.start;
 		if (last_addr < (addr + len - 1))
 			last_addr = (addr + len - 1);
 
@@ -156,7 +150,7 @@ static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, int ser_fd)
 		}
 	}
 	writeinfo->area.end = last_addr;
-	r = write_rom(ser_fd, romimage, writeinfo);
+	r = write_rom(p, romimage, writeinfo);
  error:
 	free(romimage);
 	fclose(fp);
@@ -164,7 +158,8 @@ static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, int ser_fd)
 }
 
 /* read rom writing data */
-static int writefile_to_rom(char *fn, int force_binary, struct writeinfo_t *writeinfo, int ser_fd)
+static int writefile_to_rom(char *fn, int force_binary, struct writeinfo_t *writeinfo, 
+			    struct port_t *port)
 {
 	FILE *fp = NULL;
 	static char linebuf[SREC_MAXLEN + 1];
@@ -192,7 +187,7 @@ static int writefile_to_rom(char *fn, int force_binary, struct writeinfo_t *writ
 	if (force_binary ||
 	    linebuf[0] != 'S' ||
 	    isdigit(linebuf[1]) == 0)
-		return write_binary(fp, writeinfo, ser_fd);
+		return write_binary(fp, writeinfo, port);
 
 	/* check body (calcurate checksum) */
 	memcpy(hexbuf, &linebuf[2], 2);
@@ -203,262 +198,19 @@ static int writefile_to_rom(char *fn, int force_binary, struct writeinfo_t *writ
 	}
 	if ((sum & 0xff) == 0xff)
 		/* checksum ok is Srecord format */
-		return write_srec(fp, writeinfo, ser_fd);
+		return write_srec(fp, writeinfo, port);
 	else
-		return write_binary(fp, writeinfo, ser_fd);
-}
-
-/* bitrate candidate list */
-static const int rate_list[]={1152,576,384,192,96};
-
-/* bitrate error margine (%) */
-#define ERR_MARGIN 4
-
-/* select communication bitrate */
-static int adjust_bitrate(int p_freq)
-{
- 	int brr;
-	int errorrate;
-	int rate_no;
-
-	for (rate_no = 0; rate_no < sizeof(rate_list) / sizeof(int); rate_no++) {
-		brr = (p_freq * 100) / (32 * rate_list[rate_no]);
-		errorrate = abs((p_freq * 10000) / ((brr + 1) * rate_list[rate_no] * 32) - 100);
-		if (errorrate <= ERR_MARGIN)
-			return rate_list[rate_no];
-	}
-	return 0;
-}
-
-#define C_MULNO 0
-#define P_MULNO 1
-#define C_FREQNO 0
-#define P_FREQNO 1
-
-/* change communicate bitrate */
-static int change_bitrate(int ser_fd, int in_freq,
-			  struct multilist_t *multi, struct freqlist_t *freq)
-{
-	int rateno;
-	int core_mul, peripheral_mul;
-	int core_freq, peripheral_freq;
-	int clock;
-	int rate;
-
-	core_mul       = 0;
-	peripheral_mul = 0;
-	/* select cpu core clock frequency */
-	for (rateno = 0, core_freq = -1; rateno < multi->muls[C_MULNO].numrate; rateno++) {
-		if (multi->muls[C_MULNO].rate[rateno] > 0)
-			clock = in_freq * multi->muls[C_MULNO].rate[rateno];
-		else
-			clock = in_freq / -multi->muls[C_MULNO].rate[rateno];
-		if (!(clock >= freq->freq[C_FREQNO].min && clock <= freq->freq[C_FREQNO].max))
-			continue;
-		if (core_freq < clock) {
-			core_mul  = multi->muls[C_MULNO].rate[rateno];
-			core_freq = clock;
-		}
-	}
-
-	/* select peripheral clock freqency */
-	if (multi->nummulti > P_MULNO) {
-		for (rateno = 0, peripheral_freq = -1; 
-		     rateno < multi->muls[P_MULNO].numrate; rateno++) {
-			if (multi->muls[P_MULNO].rate[rateno] > 0)
-				clock = in_freq * multi->muls[P_MULNO].rate[rateno];
-			else
-				clock = in_freq / -multi->muls[P_MULNO].rate[rateno];
-			if (clock < freq->freq[P_FREQNO].min || 
-			    clock > freq->freq[P_FREQNO].max)
-				continue;
-			if (peripheral_freq < clock) {
-				peripheral_mul  = multi->muls[P_MULNO].rate[rateno];
-				peripheral_freq = clock;
-			}
-		}
-	} else {
-		peripheral_mul  = 0;
-		peripheral_freq = core_freq;
-	}
-
-	/* select clock check */
-	if (core_freq == -1 || peripheral_freq == -1) {
-		fprintf(stderr,"input frequency (%d.%d MHz) is out of range\n", 
-			in_freq / 100, in_freq % 100);
-		return 0;
-	}
-
-	VERBOSE_PRINT("core multiple rate=%d, freq=%d.%d MHz\n", 
-		      core_mul, core_freq / 100, core_freq % 100);
-	VERBOSE_PRINT("peripheral multiple rate=%d, freq=%d.%d MHz\n", 
-		      peripheral_mul, peripheral_freq / 100, peripheral_freq % 100);
-
-	/* select bitrate from peripheral cock*/
-	rate = adjust_bitrate(peripheral_freq);
-	if (rate == 0)
-		return 0;
-
-	VERBOSE_PRINT("bitrate %d bps\n",rate * 100);
-
-	/* setup host/target bitrate */
-	return set_bitrate(ser_fd, rate, in_freq, core_mul, peripheral_mul);
-}
-
-/* connect to target chip */
-static int setup_connection(const char *ser_port, int input_freq)
-{
-	int ser_fd;
-	int c;
-	int r = -1;
-	struct devicelist_t *devicelist = NULL;
-	struct clockmode_t  *clockmode  = NULL;
-	struct multilist_t  *multilist  = NULL;
-	struct freqlist_t   *freqlist   = NULL;
-
-	/* serial port open */
-	ser_fd = open_serial(ser_port);
-	if (ser_fd == -1)
-		return -1;
-
-	/* connect target */
-	if (!connect_target(ser_fd)) {
-		if (errno != 0)
-			perror(PROGNAME);
-		else
-			fputs("target no response\n", stderr);
-		goto error;
-	}
-
-	/* query target infomation */
-	devicelist = get_devicelist(ser_fd);
-	if (devicelist == NULL) {
-		if (errno != 0)
-			perror(PROGNAME);
-		else
-			fputs("devicelist error\n", stderr);
-		goto error;
-	}
-	if (verbose) {
-		char codes[5];
-		printf("supports devices: %d\n", devicelist->numdevs);
-		for (c = 0; c < devicelist->numdevs; c++) {
-			memcpy(codes, devicelist->devs[c].code, 4);
-			codes[4] = '\0';
-			printf("%d: %s - %s\n", c+1, codes, devicelist->devs[c].name);
-		}
-	}
-
-	/* query target clockmode */
-	clockmode = get_clockmode(ser_fd);
-	if (clockmode == NULL) {
-		if (errno != 0)
-			perror(PROGNAME);
-		else
-			fputs("clockmode error\n",stderr);
-		goto error;
-	}
-	if (verbose) {
-		if (clockmode->nummode > 0) {
-			printf("supports clockmode %d:", clockmode->nummode);
-			for (c = 0; c < clockmode->nummode; c++) {
-				printf(" %02x", clockmode->mode[c]);
-			}
-			printf("\n");
-		} else
-			printf("no clockmode support\n");
-	}
-	
-	/* SELDEV devicetype select */
-	if (devicelist->numdevs < SELDEV) {
-		fprintf(stderr, "Select Device (%d) not supported.\n", SELDEV);
-		goto error;
-	}
-	if (!select_device(ser_fd, devicelist->devs[SELDEV].code)) {
-		fputs("device select error", stderr);
-		goto error;
-	}
-
-	/* SELCLK clockmode select */
-	if (clockmode->nummode > 0) {
-		if (clockmode->nummode < SELCLK) {
-			fprintf(stderr, "Select clock (%d) not supported.\n", SELCLK);
-			goto error;
-		}
-		if (!set_clockmode(ser_fd, clockmode->mode[SELCLK])) {
-			fputs("clock select error", stderr);
-			goto error;
-		}
-	} else {
-		if (!set_clockmode(ser_fd, 0)) {
-			fputs("clock select error", stderr);
-			goto error;
-		}
-	}
-
-	/* query multiplier/devider rate */
-	multilist = get_multirate(ser_fd);
-	if (multilist == NULL) {
-		if (errno != 0)
-			perror(PROGNAME);
-		else
-			fputs("multilist error\n",stderr);
-		goto error;
-	}
-	if (verbose) {
-		int c1,c2;
-		printf("supports multirate: %d\n", multilist->nummulti);
-		for (c1 = 0; c1 < multilist->nummulti; c1++) {
-			printf("%d:", c1 + 1);
-			for (c2 = 0; c2 < multilist->muls[c1].numrate; c2++)
-				printf(" %d", multilist->muls[c1].rate[c2]);
-		}
-		printf("\n");
-	}
-
-	/* query operation frequency range */
-	freqlist = get_freqlist(ser_fd);
-	if (freqlist == NULL) {
-		if (errno != 0)
-			perror(PROGNAME);
-		else
-			fputs("freqlist error\n",stderr);
-		goto error;
-	}
-	if (verbose) {
-		printf("operation frequencies: %d\n", freqlist->numfreq);
-		for (c = 0; c < freqlist->numfreq; c++) {
-			printf("%d: %d.%d - %d.%d\n", c + 1,
-			       freqlist->freq[c].min / 100,freqlist->freq[c].min % 100, 
-			       freqlist->freq[c].max / 100,freqlist->freq[c].max % 100);
-		}
-	}
-
-	/* set writeing bitrate */
-	if (!change_bitrate(ser_fd, input_freq, multilist, freqlist)) {
-		fputs("set bitrate failed\n",stderr);
-		goto error;
-	}
-
-	r =ser_fd;
- error:
-	free(devicelist);
-	free(clockmode);
-	free(multilist);
-	free(freqlist);
-	if (r == -1 && ser_fd >= 0)
-		close(ser_fd);
-	return r;
+		return write_binary(fp, writeinfo, port);
 }
 
 /* get target rommap */
-static int get_rominfo(int ser_fd, struct writeinfo_t *writeinfo)
+static int get_rominfo(struct port_t *port, struct writeinfo_t *writeinfo)
 {
 	struct arealist_t *arealist = NULL;
 	int c;
 	
 	/* get target rommap list */
-	arealist = get_arealist(writeinfo->mat, ser_fd);
+	arealist = get_arealist(port, writeinfo->mat);
 	if (arealist == NULL) {
 		if (errno != 0)
 			perror(PROGNAME);
@@ -469,7 +221,7 @@ static int get_rominfo(int ser_fd, struct writeinfo_t *writeinfo)
 	if (verbose) {
 		printf("area map\n");
 		for (c = 0; c < arealist->areas; c++)
-			printf("%08lx - %08lx\n", arealist->area[c].start, 
+			printf("%08x - %08x\n", arealist->area[c].start, 
                                                   arealist->area[c].end); 
 	}
 
@@ -483,49 +235,16 @@ static int get_rominfo(int ser_fd, struct writeinfo_t *writeinfo)
 	free(arealist);
 
 	/* get writeing size */
-	writeinfo->size = get_writesize(ser_fd);
+	writeinfo->size = get_writesize(port);
 	if (writeinfo->size < 0) {
 		if (errno != 0)
 			perror(PROGNAME);
 		else
-			fputs("writesize error\n",stderr);
+			fputs("writesize error\n", stderr);
 		return 0;
 	}
 	VERBOSE_PRINT("writesize %d byte\n", writeinfo->size);
 	return 1;
-}
-
-static int serial_lock(const char *lock)
-{
-	struct stat s;
-	int fd;
-	pid_t pid;
-	char buf[128];
-
-	if (stat(lock, &s) == 0) {
-		fd = open(lock, O_RDWR);
-		if (fd == -1)
-			return -1;
-		read(fd, buf, sizeof(buf));
-		pid = atoi(buf);
-		if (pid > 0) {
-			if (kill(pid, 0) != -1 || errno != ESRCH)
-				return -1;
-			else {
-				lseek(fd, 0, SEEK_SET);
-				ftruncate(fd, 0);
-			}
-		}
-	} else {
-		fd = creat(lock, 0666);
-		if (fd == -1)
-			return -1;
-	}
-	pid = getpid();
-	sprintf(buf,"%8d",pid);
-	if (write(fd, buf, 8) != 8)
-		return -1;
-	return fd;
 }
 
 static int get_freq_num(const char *arg)
@@ -555,30 +274,31 @@ static int get_freq_num(const char *arg)
 
 int main(int argc, char *argv[])
 {
-	char ser_port[FILENAME_MAX] = DEFAULT_SERIAL;
-	char lockname[FILENAME_MAX];
+	char port[FILENAME_MAX] = DEFAULT_SERIAL;
 	int c;
 	int long_index;
 	int input_freq;
 	int force_binary;
-	int ser_fd;
-	int lock_fd;
+	int config_list;
 	int r;
 	struct writeinfo_t writeinfo;
+	struct port_t *p = NULL;
 
 	writeinfo.mat = user;
 	force_binary = 0;
 	input_freq = 0;
+	config_list = 0;
+
 	/* parse argment */
-	while ((c = getopt_long(argc, argv, "p:f:bV", 
+	while ((c = getopt_long(argc, argv, "p:f:bVl", 
 				long_options, &long_index)) >= 0) {
 		switch (c) {
 		case 'u':
 			writeinfo.mat = userboot;
 			break ;
 		case 'p':
-			strncpy(ser_port, optarg, sizeof(ser_port));
-			ser_port[sizeof(ser_port) - 1] = '\0';
+			strncpy(port, optarg, sizeof(port));
+			port[sizeof(port) - 1] = '\0';
 			break ;
 		case 'f':
 			input_freq = get_freq_num(optarg);
@@ -589,44 +309,58 @@ int main(int argc, char *argv[])
 		case 'V':
 			verbose = 1;
 			break ;
+		case 'l':
+			config_list = 1;
+			break;
 		case '?':
 			usage();
 			return 1;
 		}
 	}
 
-	if (optind >= argc) {
+	if (optind >= argc && !config_list) {
 		usage();
 		return 1;
 	}
 
-	snprintf(lockname, sizeof(lockname), LOCKDIR "/LCK..%s", basename(ser_port));
-	lock_fd = serial_lock(lockname);
-	if (lock_fd == -1) {
-		fputs(PROGNAME ": Serial port lock failed.\n",stderr);
-		return 1;
+	r = 1;
+	if (strncasecmp(port, "usb", 3) == 0) {
+		unsigned short vid = DEFAULT_VID;
+		unsigned short pid = DEFAULT_PID;
+		if (strlen(port) > 3) {
+			if (sscanf("%04x:%04x", port + 3, &vid, &pid) != 2) {
+				fputs("Unkonwn USB device id", stderr);
+				goto error;
+			}
+		}
+		p = open_usb(vid, pid);
+	} else
+		p = open_serial(port);
+	if (p == NULL)
+		goto error;
+
+	if (config_list) {
+		dump_configs(p);
+		p->close();
+		return 0;
 	}
 
-	r = 1;
-	ser_fd = setup_connection(ser_port, input_freq);
-	if(ser_fd < 0)
+	if (setup_connection(p, input_freq) < 0)
 		goto error;
 	puts("connect target");
 
-	if(!get_rominfo(ser_fd, &writeinfo))
+	if(!get_rominfo(p, &writeinfo))
 		goto error;
-
-	if(writefile_to_rom(argv[optind], force_binary, &writeinfo, ser_fd)) {
-		VERBOSE_PRINT("write %08lx - %08lx ", writeinfo.area.start, writeinfo.area.end);
+		
+	if(writefile_to_rom(argv[optind], force_binary, 
+						&writeinfo, p)) {
+		VERBOSE_PRINT("write %08x - %08x ", writeinfo.area.start, 
+			      writeinfo.area.end);
 		r = 0;
 	}
  error:
 	puts((r==0)?"done":"write failed");
-	if (ser_fd >= 0)
-		close(ser_fd);
-
-	close(lock_fd);
-	unlink(lockname);
-	
+	if (p)
+		p->close();
 	return r;
 }
