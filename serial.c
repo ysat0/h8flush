@@ -78,7 +78,7 @@ static int setbaud(int bitrate)
 	return 1;
 }
 
-/* connection target CPU */
+/* connect to target CPU */
 static int connect_target(void)
 {
 	int try1;

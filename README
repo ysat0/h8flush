@@ -1,1 +1,33 @@
-h8flush - H8/300 Internal flush memory writer.
+Renesas CPU on-chip flash memory writer
+
+1. Requirement
+- Standard POSIX library
+- libusb
+
+2. Build and Install
+please run "make".
+
+3. Usage
+h8flash [-p port] [-f freq] [-b] [-l] [-V] filename
+-p
+	commnunication port setting. 
+	'usb' is using usb. others using serial port.
+
+-f
+	CPU clock frequency setting
+	This is external clock frequency (MHz)
+
+-b
+	force binary writing
+
+-l
+	show device configuration list
+
+-V
+	verbose mode
+
+filename
+	S-Record file or binary image.
+
+4. Licenses
+This program license is GPL v3 or later.

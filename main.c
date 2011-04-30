@@ -35,7 +35,7 @@ const static struct option long_options[] = {
 
 static void usage(void)
 {
-	puts(PROGNAME " [-p serial port][-f input clock frequency][-b][--userboot][-l] filename");
+	puts(PROGNAME " [-p port][-f input clock frequency][-b][--userboot][-l][-V] filename");
 }
 
 /* read raw binary */
