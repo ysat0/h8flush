@@ -68,8 +68,8 @@ static void port_close(void)
 
 static struct port_t usb_port = {
 	.type = usb,
-	.send_data = usb_send_data,
-	.receive_byte = usb_read_byte,
+	.send_data = send_data,
+	.receive_byte = read_byte,
 	.connect_target = connect_target,
 	.setbaud = NULL,
 	.close = port_close,
