@@ -91,12 +91,17 @@ struct port_t *open_usb(unsigned short vid, unsigned short pid)
 	for (bus = busses; bus; bus = bus->next) {
 		for (dev = bus->devices; dev; dev = dev->next) {
 			if ((dev->descriptor.idVendor == vid) && 
-			    (dev->descriptor.idProduct == pid)) 
-				break;
+			    (dev->descriptor.idProduct == pid)) {
+				goto found;
+			}
 		}
+		dev = NULL;
 	}
-	if (dev == NULL)
+found:
+	if (dev == NULL) {
+		printf("USB device %04x:%04x not found\n", vid, pid);
 		return NULL;
+	}
 	handle = usb_open(dev);
 	if (handle == NULL) {
 		puts(usb_strerror());
