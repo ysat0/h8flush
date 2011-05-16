@@ -540,7 +540,8 @@ int write_rom(struct port_t *port, const unsigned char *romimage, struct writein
 		if (verbose)
 			printf("write - %08x\n",romaddr);
 		else {
-			printf("writing %d/%d byte\r", romaddr, writeinfo->area.end); 
+			printf("writing %d/%d byte\r", romaddr - writeinfo->area.start, 
+			       writeinfo->area.end  - writeinfo->area.start); 
 			fflush(stdout);
 		}
 	}
@@ -554,7 +555,8 @@ int write_rom(struct port_t *port, const unsigned char *romimage, struct writein
 	}
 	free(buf);
 	if (!verbose)
-		printf("writing %d/%d byte\n", writeinfo->area.end, writeinfo->area.end); 
+		printf("writing %d/%d byte\n", writeinfo->area.end  - writeinfo->area.start, 
+		       writeinfo->area.end - writeinfo->area.start); 
 
 
 	return 1;
