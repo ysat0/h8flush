@@ -515,7 +515,7 @@ int write_rom(struct port_t *port, const unsigned char *romimage, struct writein
 
 	/* writing loop */
 	for (romaddr = writeinfo->area.start; 
-	     romaddr < writeinfo->area.end; 
+	     romaddr >= writeinfo->area.start && romaddr < writeinfo->area.end; 
 	     romaddr += writeinfo->size) {
 		if (skipcheck((unsigned char *)(romimage + romaddr - writeinfo->area.start), writeinfo->size))
 			continue;
