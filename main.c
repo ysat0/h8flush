@@ -347,12 +347,12 @@ int main(int argc, char *argv[])
 
 	if (setup_connection(p, input_freq) < 0)
 		goto error;
-	puts("connect target");
+	puts("Connect target");
 
-	if(!get_rominfo(p, &writeinfo))
+	if (!get_rominfo(p, &writeinfo))
 		goto error;
 		
-	if(writefile_to_rom(argv[optind], force_binary, 
+	if (writefile_to_rom(argv[optind], force_binary, 
 						&writeinfo, p)) {
 		VERBOSE_PRINT("write %08x - %08x ", writeinfo.area.start, 
 			      writeinfo.area.end);

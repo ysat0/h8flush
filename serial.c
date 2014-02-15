@@ -88,6 +88,8 @@ static int connect_target(char *port)
 	unsigned char buf[BAUD_ADJUST_LEN];
 
 	/* wait connection establish  */
+	printf("Connecting via %s", port); 
+	fflush(stdout);
 	for(try1 = 0; try1 < TRY1COUNT; try1++) {
 		memset(buf, 0x00, BAUD_ADJUST_LEN);
 		/* send dummy data */
@@ -102,10 +104,7 @@ static int connect_target(char *port)
 			return 0;
 		if ((r > 0) && (read(ser_fd, buf, 1) == 1) && buf[0] == 0)
 			goto connect;
-		if (try1 == 0) {
-			printf("now connecting via %s", port); 
-			fflush(stdout);
-		} else {
+		if (try1 > 0) {
 			putchar('.');
 			fflush(stdout);
 		}
@@ -180,7 +179,7 @@ struct port_t *open_serial(char *ser_port)
 	snprintf(lockname, sizeof(lockname), LOCKDIR "/LCK..%s", basename(ser_port));
 	lock_fd = serial_lock(lockname);
 	if (lock_fd == -1) {
-		fputs(PROGNAME ": Serial port lock failed.\n",stderr);
+		fprintf(stderr, PROGNAME ": Serial port %s lock failed.\n", ser_port);
 		return NULL;
 	}
 
