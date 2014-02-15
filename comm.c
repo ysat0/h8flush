@@ -576,7 +576,7 @@ int setup_connection(struct port_t *p, int input_freq)
 	struct freqlist_t   *freqlist   = NULL;
 
 	/* connect target */
-	if (!p->connect_target()) {
+	if (!p->connect_target(p->dev)) {
 		if (errno != 0)
 			perror(PROGNAME);
 		else
@@ -715,7 +715,7 @@ void dump_configs(struct port_t *p)
 	int c1,c2;
 
 	/* connect target */
-	if (!p->connect_target()) {
+	if (!p->connect_target(p->dev)) {
 		if (errno != 0)
 			perror(PROGNAME);
 		else

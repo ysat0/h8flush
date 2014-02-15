@@ -79,7 +79,7 @@ static int setbaud(int bitrate)
 }
 
 /* connect to target CPU */
-static int connect_target(void)
+static int connect_target(char *port)
 {
 	int try1;
 	int r;
@@ -103,7 +103,7 @@ static int connect_target(void)
 		if ((r > 0) && (read(ser_fd, buf, 1) == 1) && buf[0] == 0)
 			goto connect;
 		if (try1 == 0) {
-			printf("now connection"); 
+			printf("now connecting via %s", port); 
 			fflush(stdout);
 		} else {
 			putchar('.');
@@ -131,6 +131,7 @@ void port_close(void)
 
 static struct port_t serial_port = {
 	.type = serial,
+	.dev = NULL,
 	.send_data = send_data,
 	.receive_byte = receive_byte,
 	.connect_target = connect_target,
@@ -200,7 +201,7 @@ struct port_t *open_serial(char *ser_port)
 	cfsetospeed(&serattr, B9600);
 	cfsetispeed(&serattr, B9600);
 	tcsetattr(ser_fd, TCSANOW, &serattr);
-
+	serial_port.dev = ser_port;
 	return &serial_port;
 }
 

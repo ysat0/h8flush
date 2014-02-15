@@ -15,6 +15,7 @@
 #define USB_TIMEOUT 100000
 
 static struct usb_dev_handle *handle;
+static char target[32];
 
 /* 
 EP1: bulk out
@@ -48,13 +49,18 @@ static int read_byte(unsigned char *data)
 }
 
 /* connect to target CPU */
-static int connect_target(void)
+static int connect_target(char *port)
 {
 	unsigned char req = 0x55;
 	int r;
+	printf("now connecting to %s", port); 
+	fflush(stdout);
 	usb_bulk_write(handle, 0x01, (const char *)&req, 1, USB_TIMEOUT);
-	while ((r = usb_bulk_read(handle, 0x82, (char *)&req, 1, USB_TIMEOUT)) == 0)
+	while ((r = usb_bulk_read(handle, 0x82, (char *)&req, 1, USB_TIMEOUT)) == 0) {
+		putchar('.');
+		fflush(stdout);
 		usleep(100000);
+	}
 	if (r < 0 || req != 0xe6)
 		return 0;
 	else
@@ -68,6 +74,7 @@ static void port_close(void)
 
 static struct port_t usb_port = {
 	.type = usb,
+	.dev = target,
 	.send_data = send_data,
 	.receive_byte = read_byte,
 	.connect_target = connect_target,
@@ -108,5 +115,6 @@ found:
 		return NULL;
 	}
 	usb_claim_interface(handle, dev->config->interface->altsetting->bInterfaceNumber);
+	snprintf(target, sizeof(target), "USB(%04x:%04x)", vid, pid);
 	return &usb_port;
 }

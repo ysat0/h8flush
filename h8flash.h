@@ -117,7 +117,8 @@ enum port_type {serial, usb};
 
 struct port_t {
 	enum port_type type;
-	int (*connect_target)(void);
+	char *dev;
+	int (*connect_target)(char *port);
 	int (*send_data)(const unsigned char *data, int len);
 	int (*receive_byte)(unsigned char *data);
 	int (*setbaud)(int bitrate);
