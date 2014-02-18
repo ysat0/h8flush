@@ -487,7 +487,7 @@ int write_rom(struct port_t *port, const unsigned char *romimage, struct writein
 		return 0;
 	}
 
-	puts("erase flash...");
+	puts("Erase flash...");
 	/* enter writemode */
 	buf[0] = WRITEMODE;
 	send(port, buf, 1);

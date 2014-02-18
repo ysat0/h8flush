@@ -88,7 +88,7 @@ static int connect_target(char *port)
 	unsigned char buf[BAUD_ADJUST_LEN];
 
 	/* wait connection establish  */
-	printf("Connecting via %s", port); 
+	printf("Connecting via %s.", port);
 	fflush(stdout);
 	for(try1 = 0; try1 < TRY1COUNT; try1++) {
 		memset(buf, 0x00, BAUD_ADJUST_LEN);
@@ -176,10 +176,12 @@ struct port_t *open_serial(char *ser_port)
 {
 	struct termios serattr;
 
-	snprintf(lockname, sizeof(lockname), LOCKDIR "/LCK..%s", basename(ser_port));
+	snprintf(lockname, sizeof(lockname), LOCKDIR "/LCK..%s",
+		 basename(ser_port));
 	lock_fd = serial_lock(lockname);
 	if (lock_fd == -1) {
-		fprintf(stderr, PROGNAME ": Serial port %s lock failed.\n", ser_port);
+		fprintf(stderr, PROGNAME ": Serial port %s lock failed.\n",
+			ser_port);
 		return NULL;
 	}
 
