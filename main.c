@@ -39,11 +39,13 @@ const static struct option long_options[] = {
 
 static void usage(void)
 {
-	puts(PROGNAME " [-p port][-f input clock frequency][-b][--userboot][-l][-V] filename");
+	puts(PROGNAME "-f input clock frequency [-p port]]"
+	     "[-b][--userboot][-l][-V] filename");
 }
 
 /* read raw binary */
-static int write_binary(FILE *fp, struct writeinfo_t *writeinfo, struct port_t *p)
+static int write_binary(FILE *fp, struct writeinfo_t *writeinfo,
+			struct port_t *p)
 {
 	int fno;
 	struct stat bin_st;
@@ -55,7 +57,8 @@ static int write_binary(FILE *fp, struct writeinfo_t *writeinfo, struct port_t *
 	fstat(fno, &bin_st);
 	bin_len = bin_st.st_size;
 
-	if ((bin_buf = (unsigned char *)mmap(NULL, bin_len, PROT_READ, MAP_SHARED, fno, 0)) == MAP_FAILED)
+	if ((bin_buf = (unsigned char *)mmap(NULL, bin_len, PROT_READ,
+					     MAP_SHARED, fno, 0)) == MAP_FAILED)
 		goto error_perror;
 	writeinfo->area.end = bin_len - 1;
 	if (!write_rom(p, bin_buf, writeinfo))
@@ -88,13 +91,15 @@ static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, struct port_t *p)
 	const static int address_len[]={0,4,6,8,0,0,0,8,6,4};
 	int r = 0;
 	int l;
+	unsigned int romsize;
 
-	romimage = (unsigned char *)malloc(writeinfo->area.end - writeinfo->area.start + 1);
+	romsize = writeinfo->area.end - writeinfo->area.start + 1;
+	romimage = (unsigned char *)malloc(romsize);
 	if (!romimage) {
 		perror(PROGNAME);
 		goto error;
 	}
-	memset(romimage, 0xff, writeinfo->area.end - writeinfo->area.start + 1);
+	memset(romimage, 0xff, romsize);
 
 	while (fgets(linebuf, sizeof(linebuf), fp)) {
 		/* check valid Srecord */
@@ -126,7 +131,8 @@ static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, struct port_t *p)
 		/* area check */
 		if (addr < writeinfo->area.start || 
 		    (addr + len - 1) > writeinfo->area.end) {
-			fprintf(stderr, "srec address %08x is out of romarea\n", addr);
+			fprintf(stderr,
+				"srec address %08x is out of rom\n", addr);
 			goto error;
 		}
 		bufp = romimage + addr - writeinfo->area.start;
