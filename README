@@ -2,13 +2,16 @@ Renesas CPU on-chip flash memory writer
 
 1. Requirement
 - Standard POSIX library
-- libusb
+- libusb (optional)
+- libelf (optional)
 
 2. Build and Install
-please run "make".
+ 1. ./configure
+ 2. make
+ 3. make install
 
 3. Usage
-h8flash [-p port] [-f freq] [-b] [-l] [-V] filename
+h8flash -f freq[-p port] [-b] [-l] [-V] filename
 -p
 	commnunication port setting. 
 	'usb' is using usb. others using serial port.
@@ -27,7 +30,7 @@ h8flash [-p port] [-f freq] [-b] [-l] [-V] filename
 	verbose mode
 
 filename
-	S-Record file or binary image.
+	S-Record file, ELF binary or raw binary image.
 
 4. Licenses
-This program license is GPL v3 or later.
+This program license is GPL v2.1 or later.

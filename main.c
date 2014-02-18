@@ -8,6 +8,10 @@
  * General Public License version 2.1 (or later).
  */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <stdio.h>
 #include <getopt.h>
 #include <stddef.h>
@@ -403,12 +407,13 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (optind >= argc && !config_list) {
+	if (optind >= argc || !config_list || input_freq == 0) {
 		usage();
 		return 1;
 	}
 
 	r = 1;
+#ifdef HAVE_USB_H
 	if (strncasecmp(port, "usb", 3) == 0) {
 		unsigned short vid = DEFAULT_VID;
 		unsigned short pid = DEFAULT_PID;
@@ -421,6 +426,9 @@ int main(int argc, char *argv[])
 		p = open_usb(vid, pid);
 	} else
 		p = open_serial(port);
+#else
+	p = open_serial(port);
+#endif
 	if (p == NULL)
 		goto error;
 

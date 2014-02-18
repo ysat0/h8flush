@@ -8,8 +8,13 @@
  * General Public License version 2.1 (or later).
  */
 
-#include <usb.h>
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <stdio.h>
+#ifdef HAVE_USB_H
+#include <usb.h>
 #include "h8flash.h"
 
 #define USB_TIMEOUT 100000
@@ -118,3 +123,9 @@ found:
 	snprintf(target, sizeof(target), "USB(%04x:%04x)", vid, pid);
 	return &usb_port;
 }
+#else
+struct port_t *open_usb(unsigned short vid, unsigned short pid)
+{
+	return NULL;
+}
+#endif
