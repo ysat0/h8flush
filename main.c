@@ -17,6 +17,10 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#ifdef HAVE_GELF_H
+#include <gelf.h>
+#endif
+
 #include "h8flash.h"
 
 #define SREC_MAXLEN (256*2 + 4 + 1)
@@ -157,6 +161,76 @@ static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, struct port_t *p)
 	return r;
 }
 
+#ifdef HAVE_ELF_H
+static int writefile_elf(FILE *fp, struct writeinfo_t *writeinfo,
+			 struct port_t *p)
+{
+	unsigned char *romimage = NULL;
+	unsigned int romsize;
+	int fd;
+	int n;
+	int i;
+	Elf *elf = NULL;
+	GElf_Phdr phdr;
+	unsigned long last_addr = 0;
+	int ret = -1;
+
+	romsize = writeinfo->area.end - writeinfo->area.start + 1;
+	romimage = (unsigned char *)malloc(romsize);
+	if (!romimage) {
+		perror(PROGNAME);
+		goto error;
+	}
+	memset(romimage, 0xff, romsize);
+	elf_version(EV_CURRENT);
+	fd = fileno(fp);
+	elf = elf_begin(fd, ELF_C_READ, NULL);
+	if (elf == NULL) {
+		fputs(elf_errmsg(-1), stderr);
+		goto error;
+	}
+	if(elf_kind(elf) != ELF_K_ELF) {
+		fputs("Not ELF executable", stderr);
+		goto error;
+	}
+	elf_getphdrnum(elf, &n);
+	for (i = 0; i < n; i++) {
+		if (gelf_getphdr(elf, &phdr) == NULL) {
+			fputs(elf_errmsg(-1), stderr);
+			goto error;
+		}
+		if (verbose) {
+			printf("   offset   paddr    size\n");
+			printf("%d: %08x %08x %08x\n",
+			       n, phdr.p_offset, phdr.p_pddr, phdr,p_filesz);
+		}
+		if (phdr.p_paddr < writeinfo->area.start ||
+		    (phdr.p_paddr + phdr.p_filesz) > writeinfo->area.end) {
+			fprintf("%08x - %08x is out of rom",
+				phdr.p_pddr, phdr.p_pddr + phdr,p_filesz);
+			goto error;
+		}
+		lseek(fd, phdr.p_offset, SEEK_SET);
+		sz = read(fd, romimage + (phdr.p_paddr - writeinfo->area.start),
+			  phdr.p_filesz);
+		if (sz != phdr.p_filesz) {
+			fputs("File read error", stderr);
+			goto error;
+		}
+		if (last_addr < (phdr.p_paddr + pdhr.filesz))
+			last_addr = phdr.p_paddr + pdhr.filesz;
+	}
+	writeinfo->area.end = last_addr;
+	ret = write_rom(p, romimage, writeinfo);
+error:
+	if (elf)
+		elf_end(elf);
+	fclose(fp);
+	free(romimage);
+	return ret;
+}		
+#endif
+
 /* read rom writing data */
 static int writefile_to_rom(char *fn, int force_binary, struct writeinfo_t *writeinfo, 
 			    struct port_t *port)
@@ -177,12 +251,17 @@ static int writefile_to_rom(char *fn, int force_binary, struct writeinfo_t *writ
 		return -1;
 	}
 	/* get head */
-	if (fgets(linebuf, sizeof(linebuf), fp) == NULL && ferror(fp)) {
+	if (fread(linebuf, sizeof(linebuf), 1, fp) < 0 && ferror(fp)) {
 		fclose(fp);
 		return -1;
 	}
 	fseek(fp,0,SEEK_SET);
 
+#ifdef HAVE_ELF_H
+	/* check ELF */
+	if (!force_binary && memcmp(linebuf, "\x7fELF", 4) == 0)
+		return write_elf(fp, writeinfo, port)
+#endif
 	/* check 'S??' */
 	if (force_binary ||
 	    linebuf[0] != 'S' ||
