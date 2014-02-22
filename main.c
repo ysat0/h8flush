@@ -407,7 +407,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (optind >= argc || !config_list || input_freq == 0) {
+	if (optind >= argc && input_freq == 0 && !config_list) {
 		usage();
 		return 1;
 	}
