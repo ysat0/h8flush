@@ -171,19 +171,20 @@ static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, struct port_t *p)
 	return r;
 }
 
-#ifdef HAVE_ELF_H
-static int writefile_elf(FILE *fp, struct writeinfo_t *writeinfo,
+#ifdef HAVE_GELF_H
+static int write_elf(FILE *fp, struct writeinfo_t *writeinfo,
 			 struct port_t *p)
 {
 	unsigned char *romimage = NULL;
 	unsigned int romsize;
 	int fd;
-	int n;
+	size_t n;
 	int i;
 	Elf *elf = NULL;
 	GElf_Phdr phdr;
 	unsigned long last_addr = 0;
 	int ret = -1;
+	size_t sz;
 
 	romsize = writeinfo->area.end - writeinfo->area.start + 1;
 	romimage = (unsigned char *)malloc(romsize);
@@ -205,19 +206,22 @@ static int writefile_elf(FILE *fp, struct writeinfo_t *writeinfo,
 	}
 	elf_getphdrnum(elf, &n);
 	for (i = 0; i < n; i++) {
-		if (gelf_getphdr(elf, &phdr) == NULL) {
+		if (gelf_getphdr(elf, i, &phdr) == NULL) {
 			fputs(elf_errmsg(-1), stderr);
 			goto error;
 		}
+		if (phdr.p_type != PT_LOAD)
+			continue ;
 		if (verbose) {
 			printf("   offset   paddr    size\n");
 			printf("%d: %08x %08x %08x\n",
-			       n, phdr.p_offset, phdr.p_pddr, phdr,p_filesz);
+			       i, phdr.p_offset, phdr.p_paddr, phdr.p_filesz);
 		}
 		if (phdr.p_paddr < writeinfo->area.start ||
 		    (phdr.p_paddr + phdr.p_filesz) > writeinfo->area.end) {
-			fprintf("%08x - %08x is out of rom",
-				phdr.p_pddr, phdr.p_pddr + phdr,p_filesz);
+			fprintf(stderr, "%08lx - %08lx is out of rom",
+				(unsigned long)phdr.p_paddr,
+				(unsigned long)(phdr.p_paddr + phdr.p_filesz));
 			goto error;
 		}
 		lseek(fd, phdr.p_offset, SEEK_SET);
@@ -227,8 +231,8 @@ static int writefile_elf(FILE *fp, struct writeinfo_t *writeinfo,
 			fputs("File read error", stderr);
 			goto error;
 		}
-		if (last_addr < (phdr.p_paddr + pdhr.filesz))
-			last_addr = phdr.p_paddr + pdhr.filesz;
+		if (last_addr < (phdr.p_paddr + phdr.p_filesz))
+			last_addr = phdr.p_paddr + phdr.p_filesz;
 	}
 	writeinfo->area.end = last_addr;
 	ret = write_rom(p, romimage, writeinfo);
@@ -267,10 +271,10 @@ static int writefile_to_rom(char *fn, int force_binary, struct writeinfo_t *writ
 	}
 	fseek(fp,0,SEEK_SET);
 
-#ifdef HAVE_ELF_H
+#ifdef HAVE_GELF_H
 	/* check ELF */
-	if (!force_binary && memcmp(linebuf, "\x7fELF", 4) == 0)
-		return write_elf(fp, writeinfo, port)
+	if (!force_binary && memcmp(linebuf, ELFMAG, SELFMAG) == 0)
+		return write_elf(fp, writeinfo, port);
 #endif
 	/* check 'S??' */
 	if (force_binary ||
