@@ -121,7 +121,7 @@ static int connect_target(char *port)
 		return 0; /* ng */
 }
 
-void port_close(void)
+static void port_close(void)
 {
 	close(ser_fd);
 	close(lock_fd);
