@@ -217,9 +217,11 @@ static int write_elf(FILE *fp, struct writeinfo_t *writeinfo,
 			printf("%d: %08x %08x %08x\n",
 			       i, phdr.p_offset, phdr.p_paddr, phdr.p_filesz);
 		}
+		if (phdr.p_filesz == 0)
+			continue ;
 		if (phdr.p_paddr < writeinfo->area.start ||
 		    (phdr.p_paddr + phdr.p_filesz) > writeinfo->area.end) {
-			fprintf(stderr, "%08lx - %08lx is out of rom",
+			fprintf(stderr, "%08lx - %08lx is out of rom\n",
 				(unsigned long)phdr.p_paddr,
 				(unsigned long)(phdr.p_paddr + phdr.p_filesz));
 			goto error;
