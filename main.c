@@ -38,6 +38,7 @@ const static struct option long_options[] = {
 	{"binary", no_argument, NULL, 'b'},
 	{"verbose", no_argument, NULL, 'V'},
 	{"list", no_argument, NULL, 'l'},
+	{"endian", required_argument, NULL, 'e'},
 	{0, 0, 0, 0}
 };
 
@@ -47,40 +48,59 @@ static void usage(void)
 	     "[-b][--userboot][-l][-V] filename");
 }
 
+static struct area_t *lookup_area(struct arealist_t *arealist,
+				  unsigned int addr)
+{
+	int i;
+	for (i = 0; i < arealist->areas; i++) {
+		if (arealist->area[i].start <= addr &&
+		    arealist->area[i].end >= addr)
+			return &arealist->area[i];
+	}
+	return NULL;
+}
+
 /* read raw binary */
-static int write_binary(FILE *fp, struct writeinfo_t *writeinfo,
-			struct port_t *p)
+static int write_binary(FILE *fp, struct comm_t *com,
+			struct port_t *p, struct arealist_t *arealist,
+			enum mat_t mat)
 {
 	int fno;
 	struct stat bin_st;
-	unsigned char *bin_buf;
-	unsigned long bin_len;
+	size_t bin_len, len;
+	unsigned int addr;
+	struct area_t *area;
 
 	fno = fileno(fp);
 
 	fstat(fno, &bin_st);
 	bin_len = bin_st.st_size;
+	addr = arealist->area[0].start;
 
-	if ((bin_buf = (unsigned char *)mmap(NULL, bin_len, PROT_READ,
-					     MAP_SHARED, fno, 0)) == MAP_FAILED)
-		goto error_perror;
-	writeinfo->area.end = bin_len - 1;
-	if (!write_rom(p, bin_buf, writeinfo))
+	while(bin_len > 0) {
+		area = lookup_area(arealist, addr);
+		len = bin_len < (area->end - area->start)?
+			bin_len:(area->end - area->start);
+		if (len > read(area->image, len, fno))
+			goto error_perror;
+		bin_len -= len;
+		addr += len;
+	}
+	if (!com->write_rom(p, arealist, mat))
 		goto error;
-	munmap(bin_buf, bin_len);
 	fclose(fp);
 	return bin_len;
  error_perror:
 	perror(PROGNAME);
  error:	
-	if (bin_buf)
-		munmap(bin_buf, bin_len);
 	fclose(fp);
 	return 0;
 }
 
 /* read srec binary */
-static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, struct port_t *p)
+static int write_srec(FILE *fp, struct comm_t *com,
+		      struct port_t *p, struct arealist_t *arealist,
+		      enum mat_t mat)
 {
 	unsigned char *romimage = NULL;
 	unsigned char *bufp;
@@ -95,15 +115,7 @@ static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, struct port_t *p)
 	const static int address_len[]={0,4,6,8,0,0,0,8,6,4};
 	int r = 0;
 	int l;
-	unsigned int romsize;
-
-	romsize = writeinfo->area.end - writeinfo->area.start + 1;
-	romimage = (unsigned char *)malloc(romsize);
-	if (!romimage) {
-		perror(PROGNAME);
-		goto error;
-	}
-	memset(romimage, 0xff, romsize);
+	struct area_t *area;
 
 	while (fgets(linebuf, sizeof(linebuf), fp)) {
 		/* check valid Srecord */
@@ -132,16 +144,12 @@ static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, struct port_t *p)
 			sum += strtoul(hexbuf, NULL, 16);
 		}
 
-		/* area check */
-		if (addr < writeinfo->area.start || 
-		    (addr + len - 1) > writeinfo->area.end) {
-			fprintf(stderr,
-				"srec address %08x is out of rom\n", addr);
+		area = lookup_area(arealist, addr);
+		if (area == NULL) {
+			fprintf(stderr, "%08x is out of ROM.", addr);
 			goto error;
 		}
-		bufp = romimage + addr - writeinfo->area.start;
-		if (last_addr < (addr + len - 1))
-			last_addr = (addr + len - 1);
+		bufp = area->image + addr - area->start;
 
 		/* parse body */
 		for (; len > 1; --len, lp += 2, buff_size++) {
@@ -163,36 +171,29 @@ static int write_srec(FILE *fp, struct writeinfo_t *writeinfo, struct port_t *p)
 			goto error;
 		}
 	}
-	writeinfo->area.end = last_addr;
-	r = write_rom(p, romimage, writeinfo);
+	r = com->write_rom(p, arealist, mat);
  error:
-	free(romimage);
 	fclose(fp);
 	return r;
 }
 
 #ifdef HAVE_GELF_H
-static int write_elf(FILE *fp, struct writeinfo_t *writeinfo,
-			 struct port_t *p)
+static int write_elf(FILE *fp, struct comm_t *com,
+		     struct port_t *p, struct arealist_t *arealist,
+		     enum mat_t mat)
 {
 	unsigned char *romimage = NULL;
 	unsigned int romsize;
 	int fd;
 	size_t n;
-	int i;
+	int i,j;
 	Elf *elf = NULL;
 	GElf_Phdr phdr;
-	unsigned long last_addr = 0;
+	unsigned long top, last_addr = 0;
 	int ret = -1;
-	size_t sz;
-
-	romsize = writeinfo->area.end - writeinfo->area.start + 1;
-	romimage = (unsigned char *)malloc(romsize);
-	if (!romimage) {
-		perror(PROGNAME);
-		goto error;
-	}
-	memset(romimage, 0xff, romsize);
+	size_t sz, remain;
+	struct area_t *area;
+	
 	elf_version(EV_CURRENT);
 	fd = fileno(fp);
 	elf = elf_begin(fd, ELF_C_READ, NULL);
@@ -219,37 +220,42 @@ static int write_elf(FILE *fp, struct writeinfo_t *writeinfo,
 		}
 		if (phdr.p_filesz == 0)
 			continue ;
-		if (phdr.p_paddr < writeinfo->area.start ||
-		    (phdr.p_paddr + phdr.p_filesz) > writeinfo->area.end) {
-			fprintf(stderr, "%08lx - %08lx is out of rom\n",
-				(unsigned long)phdr.p_paddr,
-				(unsigned long)(phdr.p_paddr + phdr.p_filesz));
-			goto error;
-		}
 		lseek(fd, phdr.p_offset, SEEK_SET);
-		sz = read(fd, romimage + (phdr.p_paddr - writeinfo->area.start),
-			  phdr.p_filesz);
-		if (sz != phdr.p_filesz) {
-			fputs("File read error", stderr);
-			goto error;
+		remain = phdr.p_filesz;
+		top = phdr.p_paddr;
+		while(remain > 0) {
+			area = lookup_area(arealist, top);
+			if (area == NULL) {
+				fprintf(stderr, "%08x - %08x is out of ROM",
+					top, top + remain);
+				goto error;
+			}
+			j = remain < (area->end - area->start)?
+				remain:(area->size);
+			sz = read(fd, area->image + top - area->start, j);
+			if (sz != j) {
+				perror(PROGNAME);
+				goto error;
+			}
+			remain -= j;
+			top += j;
 		}
-		if (last_addr < (phdr.p_paddr + phdr.p_filesz))
-			last_addr = phdr.p_paddr + phdr.p_filesz;
 	}
-	writeinfo->area.end = last_addr;
-	ret = write_rom(p, romimage, writeinfo);
+	ret = com->write_rom(p, arealist, mat);
 error:
 	if (elf)
 		elf_end(elf);
 	fclose(fp);
-	free(romimage);
 	return ret;
 }		
 #endif
 
 /* read rom writing data */
-static int writefile_to_rom(char *fn, int force_binary, struct writeinfo_t *writeinfo, 
-			    struct port_t *port)
+static int writefile_to_rom(char *fn, int force_binary,
+			    struct comm_t *com,
+			    struct port_t *port,
+			    struct arealist_t *arealist,
+			    enum mat_t mat)
 {
 	FILE *fp = NULL;
 	static char linebuf[SREC_MAXLEN + 1];
@@ -276,13 +282,13 @@ static int writefile_to_rom(char *fn, int force_binary, struct writeinfo_t *writ
 #ifdef HAVE_GELF_H
 	/* check ELF */
 	if (!force_binary && memcmp(linebuf, ELFMAG, SELFMAG) == 0)
-		return write_elf(fp, writeinfo, port);
+		return write_elf(fp, com, port, arealist, mat);
 #endif
 	/* check 'S??' */
 	if (force_binary ||
 	    linebuf[0] != 'S' ||
 	    isdigit(linebuf[1]) == 0)
-		return write_binary(fp, writeinfo, port);
+		return write_binary(fp, com, port, arealist, mat);
 
 	/* check body (calcurate checksum) */
 	memcpy(hexbuf, &linebuf[2], 2);
@@ -293,53 +299,43 @@ static int writefile_to_rom(char *fn, int force_binary, struct writeinfo_t *writ
 	}
 	if ((sum & 0xff) == 0xff)
 		/* checksum ok is Srecord format */
-		return write_srec(fp, writeinfo, port);
+		return write_srec(fp, com, port, arealist, mat);
 	else
-		return write_binary(fp, writeinfo, port);
+		return write_binary(fp, com, port, arealist, mat);
 }
 
 /* get target rommap */
-static int get_rominfo(struct port_t *port, struct writeinfo_t *writeinfo)
+static struct arealist_t *get_rominfo(struct comm_t *com, struct port_t *port,
+				    enum mat_t mat)
 {
 	struct arealist_t *arealist = NULL;
 	int c;
 	
 	/* get target rommap list */
-	arealist = get_arealist(port, writeinfo->mat);
+	arealist = com->get_arealist(port, mat);
 	if (arealist == NULL) {
 		if (errno != 0)
 			perror(PROGNAME);
 		else
-			fputs("area list error\n",stderr);
-		return 0;
+			fputs("area list error\n", stderr);
+		return NULL;
 	}
 	if (verbose) {
 		printf("area map\n");
 		for (c = 0; c < arealist->areas; c++)
-			printf("%08x - %08x\n", arealist->area[c].start, 
-                                                  arealist->area[c].end); 
+			printf("%08x - %08x %08xbyte\n",
+			       arealist->area[c].start, 
+			       arealist->area[c].end,
+			       arealist->area[c].size); 
 	}
 
 	/* check write area info */
-	if (arealist->areas < SELAREA) {
+	if (arealist->areas < 0) {
 		fputs("illigal areamap\n", stderr);
 		free(arealist);
-		return 0;
+		return NULL;
 	}
-	writeinfo->area = arealist->area[SELAREA];
-	free(arealist);
-
-	/* get writeing size */
-	writeinfo->size = get_writesize(port);
-	if (writeinfo->size < 0) {
-		if (errno != 0)
-			perror(PROGNAME);
-		else
-			fputs("writesize error\n", stderr);
-		return 0;
-	}
-	VERBOSE_PRINT("writesize %d byte\n", writeinfo->size);
-	return 1;
+	return arealist;
 }
 
 static int get_freq_num(const char *arg)
@@ -372,24 +368,22 @@ int main(int argc, char *argv[])
 	char port[FILENAME_MAX] = DEFAULT_SERIAL;
 	int c;
 	int long_index;
-	int input_freq;
-	int force_binary;
-	int config_list;
+	int input_freq = 0;
+	int force_binary = 0;
+	int config_list = 0;
 	int r;
-	struct writeinfo_t writeinfo;
 	struct port_t *p = NULL;
-
-	writeinfo.mat = user;
-	force_binary = 0;
-	input_freq = 0;
-	config_list = 0;
+	struct comm_t *com = NULL;
+	struct arealist_t *arealist;
+	enum mat_t mat = user;
+	char endian='l';
 
 	/* parse argment */
-	while ((c = getopt_long(argc, argv, "p:f:bVl", 
+	while ((c = getopt_long(argc, argv, "p:f:bVle:", 
 				long_options, &long_index)) >= 0) {
 		switch (c) {
 		case 'u':
-			writeinfo.mat = userboot;
+			mat = userboot;
 			break ;
 		case 'p':
 			strncpy(port, optarg, sizeof(port));
@@ -406,6 +400,13 @@ int main(int argc, char *argv[])
 			break ;
 		case 'l':
 			config_list = 1;
+			break;
+		case 'e':
+			endian = optarg[0];
+			if (endian != 'l' && endian !='b') {
+				usage();
+				return 1;
+			}
 			break;
 		case '?':
 			usage();
@@ -438,25 +439,38 @@ int main(int argc, char *argv[])
 	if (p == NULL)
 		goto error;
 
+	switch (p->connect_target(port)) {
+	case 0xff:
+		r = -1;
+		goto error;
+	case 0xe6:
+		VERBOSE_PRINT("Detect old protocol\n");
+		com = comm_v1();
+		break;
+	case 0xc1:
+		VERBOSE_PRINT("Detect new protocol\n");
+		com = comm_v2();
+		break;
+	default:
+		fputs("unknown_target", stderr);
+		goto error;
+	}
+
 	if (config_list) {
-		dump_configs(p);
+		com->dump_configs(p);
 		p->close();
 		return 0;
 	}
 
-	if (setup_connection(p, input_freq) < 0)
+	if (com->setup_connection(p, input_freq, endian) < 0)
 		goto error;
 	puts("Connect target");
 
-	if (!get_rominfo(p, &writeinfo))
+	if (!(arealist = get_rominfo(com, p, mat)))
 		goto error;
 		
-	if (writefile_to_rom(argv[optind], force_binary, 
-						&writeinfo, p)) {
-		VERBOSE_PRINT("write %08x - %08x ", writeinfo.area.start, 
-			      writeinfo.area.end);
-		r = 0;
-	}
+	r = writefile_to_rom(argv[optind], force_binary, 
+			     com, p, arealist, mat);
  error:
 	puts((r==0)?"done":"write failed");
 	if (p)

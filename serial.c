@@ -44,12 +44,12 @@ static int receive_byte(unsigned char *data)
 	fd_set fdset;
 
 	*data = 0;
-	tv.tv_sec = 60;
+	tv.tv_sec = 10;
 	tv.tv_usec = 0;
 	FD_ZERO(&fdset);
 	FD_SET(ser_fd, &fdset);
 	r = select(ser_fd + 1, &fdset, NULL, NULL, &tv);
-	if (r == -1)
+	if (r < 1)
 		return -1;
 	return read(ser_fd, data, 1);
 }
@@ -110,15 +110,16 @@ static int connect_target(char *port)
 		}
 	}
 	putchar('\n');
-	return 0;
- connect:
+	return 0xff;
+connect:
+	putchar('\n');
 	/* connect done */
 	buf[0] = 0x55;
 	write(ser_fd, buf, 1);
-	if ((receive_byte(buf) == 1) && (buf[0] == 0xe6))
-		return 1; /* ok */
+	if (receive_byte(buf) == 1)
+		return buf[0]; /* ok */
 	else
-		return 0; /* ng */
+		return 0xff; /* ng */
 }
 
 static void port_close(void)

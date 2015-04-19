@@ -19,8 +19,69 @@
 #include <errno.h>
 #include "h8flash.h"
 
-#define TRY1COUNT 60
-#define BAUD_ADJUST_LEN 30
+#define ACK                  0x06
+
+#define QUERY_DEVICE         0x20
+#define QUERY_DEVICE_RES     0x30
+#define QUERY_CLOCKMODE      0x21
+#define QUERY_CLOCKMODE_RES  0x31
+#define QUERY_MULTIRATE      0x22
+#define QUERY_MULTIRATE_RES  0x32
+#define QUERY_FREQ           0x23
+#define QUERY_FREQ_RES       0x33
+#define QUERY_BOOT_AREA      0x24
+#define QUERY_BOOT_AREA_RES  0x34
+#define QUERY_USER_AREA      0x25
+#define QUERY_USER_AREA_RES  0x35
+#define QUERY_WRITESIZE      0x27
+#define QUERY_WRITESIZE_RES  0x37
+
+#define SELECT_DEVICE        0x10
+#define SET_CLOCKMODE        0x11
+
+#define SET_BITRATE          0x3f
+
+#define WRITEMODE            0x40
+#define WRITE_USERBOOT       0x42
+#define WRITE_USER           0x43
+#define BLANKCHECK_USERBOOT  0x4c
+#define BLANKCHECK_USER      0x4d
+#define WRITE                0x50
+
+struct devinfo_t {
+	char code[4];
+	char name[256];
+};
+
+struct devicelist_t {
+	int numdevs;
+	struct devinfo_t devs[0];
+};
+
+struct clockmode_t {
+	int nummode;
+	int mode[0];
+};
+
+struct multirate_t {
+	int numrate;
+	int rate[0];
+};
+
+struct multilist_t {
+	int nummulti;
+	struct multirate_t *muls[0];
+};
+
+struct freq_t {
+	int min;
+	int max;
+};
+
+struct freqlist_t {
+	int numfreq;
+	struct freq_t freq[0];
+};
 
 /* NAK answer list */
 const unsigned char naktable[] = {0x80, 0x90, 0x91, 0xbf, 0xc0, 0xc2, 0xc3, 0xc8,
@@ -107,7 +168,7 @@ static int receive(struct port_t *p, unsigned char *data)
 }
 
 /* get target device list */
-struct devicelist_t *get_devicelist(struct port_t *port)
+static struct devicelist_t *get_devicelist(struct port_t *port)
 {
 	unsigned char rxbuf[255+3];
 	unsigned char *devp;
@@ -139,7 +200,7 @@ struct devicelist_t *get_devicelist(struct port_t *port)
 }
 
 /* set target device ID */
-int select_device(struct port_t *port, const char *code)
+static int select_device(struct port_t *port, const char *code)
 {
 	unsigned char buf[6] = {SELECT_DEVICE, 0x04, 0x00, 0x00, 0x00, 0x00};
 	
@@ -151,7 +212,7 @@ int select_device(struct port_t *port, const char *code)
 }
 
 /* get target clock mode */
-struct clockmode_t *get_clockmode(struct port_t *port)
+static struct clockmode_t *get_clockmode(struct port_t *port)
 {
 	unsigned char rxbuf[255+3];
 	unsigned char *clkmdp;
@@ -183,7 +244,7 @@ struct clockmode_t *get_clockmode(struct port_t *port)
 }
 
 /* set target clock mode */
-int set_clockmode(struct port_t *port, int mode)
+static int set_clockmode(struct port_t *port, int mode)
 {
 	unsigned char buf[3] = {SET_CLOCKMODE, 0x01, 0x00};
 	
@@ -196,7 +257,7 @@ int set_clockmode(struct port_t *port, int mode)
 }
 
 /* get target multiplier/divider rate */
-struct multilist_t *get_multirate(struct port_t *port)
+static struct multilist_t *get_multirate(struct port_t *port)
 {
 	unsigned char rxbuf[255+3];
 	unsigned char *mulp;
@@ -242,7 +303,7 @@ struct multilist_t *get_multirate(struct port_t *port)
 }
 
 /* get target operation frequency list */
-struct freqlist_t *get_freqlist(struct port_t *port)
+static struct freqlist_t *get_freqlist(struct port_t *port)
 {
 	unsigned char rxbuf[255+3];
 	unsigned char *freqp;
@@ -273,13 +334,35 @@ struct freqlist_t *get_freqlist(struct port_t *port)
 }
 
 /* get target rom mapping */
-struct arealist_t *get_arealist(struct port_t *port, enum mat_t mat)
+/* get write page size */
+static int get_writesize(struct port_t *port)
+{
+	unsigned char rxbuf[5];
+	unsigned short size;
+
+	rxbuf[0] = QUERY_WRITESIZE;
+	send(port, rxbuf, 1);
+	if (receive(port, rxbuf) == -1)
+		return -1;
+	if (rxbuf[0] != QUERY_WRITESIZE_RES)
+		return -1;
+
+	if (rxbuf[1] != 2)
+		return -1;
+	size = rxbuf[2] << 8 | rxbuf[3];
+	return size;
+}
+
+static struct arealist_t *get_arealist(struct port_t *port, enum mat_t mat)
 {
 	char ans;
 	unsigned char rxbuf[255+3];
 	unsigned char *areap;
 	struct arealist_t *arealist;
 	int numarea;
+	int wsize;
+
+	wsize = get_writesize(port);
 
 	switch(mat) {
 	case user:
@@ -308,30 +391,18 @@ struct arealist_t *get_arealist(struct port_t *port, enum mat_t mat)
 	arealist->areas = numarea;
 	areap = &rxbuf[3];
 	for(numarea = 0; numarea < arealist->areas; numarea++) {
+		int size;
+
 		arealist->area[numarea].start = getlong(areap);
 		arealist->area[numarea].end   = getlong(areap+4);
+		arealist->area[numarea].size  = wsize;
 		areap += 8;
+		size = arealist->area[numarea].end - arealist->area[numarea].start;
+		if (!(arealist->area[numarea].image = malloc(size)))
+			return NULL;
+		memset(arealist->area[numarea].image, 0xff, size);
 	}
 	return arealist;
-}
-
-/* get write page size */
-int get_writesize(struct port_t *port)
-{
-	unsigned char rxbuf[5];
-	unsigned short size;
-
-	rxbuf[0] = QUERY_WRITESIZE;
-	send(port, rxbuf, 1);
-	if (receive(port, rxbuf) == -1)
-		return -1;
-	if (rxbuf[0] != QUERY_WRITESIZE_RES)
-		return -1;
-
-	if (rxbuf[1] != 2)
-		return -1;
-	size = rxbuf[2] << 8 | rxbuf[3];
-	return size;
 }
 
 /* bitrate candidate list */
@@ -476,16 +547,12 @@ static int skipcheck(unsigned char *data, unsigned short size)
 }
 
 /* write rom image */
-int write_rom(struct port_t *port, const unsigned char *romimage, struct writeinfo_t *writeinfo)
+static int write_rom(struct port_t *port, struct arealist_t *arealist, enum mat_t mat)
 {
 	unsigned char *buf = NULL;
 	unsigned int romaddr;
-
-	buf = (unsigned char *)malloc(5 + writeinfo->size);
-	if (buf == NULL) {
-		perror("");
-		return 0;
-	}
+	int i;
+	struct area_t *area;
 
 	puts("Erase flash...");
 	/* enter writemode */
@@ -498,7 +565,7 @@ int write_rom(struct port_t *port, const unsigned char *romimage, struct writein
 	}
 
 	/* mat select */
-	switch (writeinfo->mat) {
+	switch (mat) {
 	case user:     
 		buf[0] = WRITE_USER;
 		break;
@@ -514,35 +581,47 @@ int write_rom(struct port_t *port, const unsigned char *romimage, struct writein
 	}
 
 	/* writing loop */
-	for (romaddr = writeinfo->area.start; 
-	     romaddr >= writeinfo->area.start && romaddr < writeinfo->area.end; 
-	     romaddr += writeinfo->size) {
-		if (skipcheck((unsigned char *)(romimage + romaddr - writeinfo->area.start), writeinfo->size))
-			continue;
-		/* set write data */
-		*(buf + 0) = WRITE;
-		setlong(buf + 1, romaddr);
-		if ((romaddr + writeinfo->size) < writeinfo->area.end) {
-			memcpy(buf + 5, romimage + romaddr - writeinfo->area.start, writeinfo->size);
-		} else {
-			/* lastpage  < writesize */
-			memcpy(buf + 5, romimage + romaddr - writeinfo->area.start, 
-			       (writeinfo->area.end - romaddr));
-			memset(buf + 5 + writeinfo->area.end - romaddr, 0xff, 
-			       writeinfo->size - (writeinfo->area.end - romaddr));
-		}
-		/* write */
-		send(port, buf, 5 + writeinfo->size);
-		if (receive(port, buf) != 1) {
-			fprintf(stderr, PROGNAME ": write data %08x failed.", romaddr);
-			goto error;
-		}
-		if (verbose)
-			printf("write - %08x\n",romaddr);
-		else {
-			printf("writing %d/%d byte\r", romaddr - writeinfo->area.start, 
-			       writeinfo->area.end  - writeinfo->area.start); 
-			fflush(stdout);
+	for (i = 0; i < arealist->areas; i++) {
+		area = &arealist->area[i];
+		for (romaddr = area->start; 
+		     romaddr < area->end; 
+		     romaddr += area->size) {
+			if (skipcheck(area->image + romaddr - area->start,
+				      area->size)) {
+				if (verbose)
+					printf("skip - %08x\n",romaddr);
+				else {
+					printf("writing %d/%d byte\r",
+					       romaddr - area->start, 
+					       area->end  - area->start); 
+					fflush(stdout);
+				}
+				continue;
+			}
+			buf = malloc(area->size + 5);
+			if (buf == NULL)
+				goto error;
+			/* set write data */
+			*(buf + 0) = WRITE;
+			setlong(buf + 1, romaddr);
+			memcpy(buf + 5,
+			       area->image + romaddr - area->start,
+			       area->size);
+			/* write */
+			send(port, buf, 5 + area->size);
+			free(buf);
+			if (receive(port, buf) != 1) {
+				fprintf(stderr, PROGNAME ": write data %08x failed.", romaddr);
+				goto error;
+			}
+			if (verbose)
+				printf("write - %08x\n",romaddr);
+			else {
+				printf("writing %d/%d byte\r",
+				       romaddr - area->start, 
+				       area->end  - area->start); 
+				fflush(stdout);
+			}
 		}
 	}
 	/* write finish */
@@ -553,20 +632,16 @@ int write_rom(struct port_t *port, const unsigned char *romimage, struct writein
 		fputs(PROGNAME ": writemode exit failed", stderr);
 		goto error;
 	}
-	free(buf);
 	if (!verbose)
-		printf("writing %d/%d byte\n", writeinfo->area.end  - writeinfo->area.start, 
-		       writeinfo->area.end - writeinfo->area.start); 
-
+		putc('\n', stdout);
 
 	return 1;
  error:
-	free(buf);
 	return 0;
 }
 
 /* connect to target chip */
-int setup_connection(struct port_t *p, int input_freq)
+static int setup_connection(struct port_t *p, int input_freq, char endian)
 {
 	int c;
 	int r = -1;
@@ -574,15 +649,6 @@ int setup_connection(struct port_t *p, int input_freq)
 	struct clockmode_t  *clockmode  = NULL;
 	struct multilist_t  *multilist  = NULL;
 	struct freqlist_t   *freqlist   = NULL;
-
-	/* connect target */
-	if (!p->connect_target(p->dev)) {
-		if (errno != 0)
-			perror(PROGNAME);
-		else
-			fputs("target no response\n", stderr);
-		goto error;
-	}
 
 	/* query target infomation */
 	devicelist = get_devicelist(p);
@@ -704,7 +770,7 @@ int setup_connection(struct port_t *p, int input_freq)
 }
 
 /* connect to target chip */
-void dump_configs(struct port_t *p)
+static void dump_configs(struct port_t *p)
 {
 	struct devicelist_t *devicelist = NULL;
 	struct clockmode_t  *clockmode  = NULL;
@@ -713,15 +779,6 @@ void dump_configs(struct port_t *p)
 	int dev;
 	int clk;
 	int c1,c2;
-
-	/* connect target */
-	if (!p->connect_target(p->dev)) {
-		if (errno != 0)
-			perror(PROGNAME);
-		else
-			fputs("target no response\n", stderr);
-		goto error;
-	}
 
 	/* query target infomation */
 	devicelist = get_devicelist(p);
@@ -795,4 +852,15 @@ error:
 	free(devicelist);
 	free(clockmode);
 }	
-			
+
+static struct comm_t v1 = {
+	.get_arealist = get_arealist,
+	.write_rom = write_rom,
+	.setup_connection = setup_connection,
+	.dump_configs = dump_configs,
+};
+
+struct comm_t *comm_v1(void)
+{
+	return &v1;
+}
