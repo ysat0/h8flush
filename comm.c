@@ -550,15 +550,16 @@ static int skipcheck(unsigned char *data, unsigned short size)
 static int write_rom(struct port_t *port, struct arealist_t *arealist, enum mat_t mat)
 {
 	unsigned char *buf = NULL;
+	unsigned char cmdbuf[1];
 	unsigned int romaddr;
 	int i;
 	struct area_t *area;
 
 	puts("Erase flash...");
 	/* enter writemode */
-	buf[0] = WRITEMODE;
-	send(port, buf, 1);
-	if (receive(port, buf) != 1) {
+	cmdbuf[0] = WRITEMODE;
+	send(port, cmdbuf, 1);
+	if (receive(port, cmdbuf) != 1) {
 		printf("%02x ", buf[0]);
 		fputs(PROGNAME ": writemode start failed\n", stderr);
 		goto error;
@@ -567,15 +568,15 @@ static int write_rom(struct port_t *port, struct arealist_t *arealist, enum mat_
 	/* mat select */
 	switch (mat) {
 	case user:     
-		buf[0] = WRITE_USER;
+		cmdbuf[0] = WRITE_USER;
 		break;
 	case userboot: 
-		buf[0] = WRITE_USERBOOT;
+		cmdbuf[0] = WRITE_USERBOOT;
 		break;
 	}
-	send(port, buf, 1);
-	if (receive(port, buf) != 1) {
-		printf("%02x ", buf[0]);
+	send(port, cmdbuf, 1);
+	if (receive(port, cmdbuf) != 1) {
+		printf("%02x ", cmdbuf[0]);
 		fputs(PROGNAME ": writemode start failed\n", stderr);
 		goto error;
 	}

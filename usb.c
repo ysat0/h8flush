@@ -61,15 +61,18 @@ static int connect_target(char *port)
 	printf("now connecting to %s", port); 
 	fflush(stdout);
 	usb_bulk_write(handle, 0x01, (const char *)&req, 1, USB_TIMEOUT);
-	while ((r = usb_bulk_read(handle, 0x82, (char *)&req, 1, USB_TIMEOUT)) == 0) {
+	do {
 		putchar('.');
 		fflush(stdout);
-		usleep(100000);
-	}
+		r = usb_bulk_read(handle, 0x82, (char *)&req, 1, USB_TIMEOUT);
+		if (r == 0)
+			usleep(100000);
+	} while (r == 0);
+	putchar('\n');
 	if (r < 0 || req != 0xe6)
 		return 0;
 	else
-		return 1;
+		return req;
 }
 
 static void port_close(void)

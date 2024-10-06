@@ -21,6 +21,8 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <unistd.h>
+#include <limits.h>
 #ifdef HAVE_GELF_H
 #include <gelf.h>
 #endif
@@ -35,17 +37,18 @@ const static struct option long_options[] = {
 	{"userboot", no_argument, NULL, 'u'},
 	{"port", required_argument, NULL, 'p'},
 	{"freq", required_argument, NULL, 'f'},
-	{"binary", no_argument, NULL, 'b'},
+	{"binary", optional_argument, NULL, 'b'},
 	{"verbose", no_argument, NULL, 'V'},
 	{"list", no_argument, NULL, 'l'},
 	{"endian", required_argument, NULL, 'e'},
+	{"dump", no_argument, NULL, 'd'},
 	{0, 0, 0, 0}
 };
 
 static void usage(void)
 {
-	puts(PROGNAME "-f input clock frequency [-p port]]"
-	     "[-b][--userboot][-l][-V] filename");
+	puts(PROGNAME " -f input clock frequency [-p port]"
+	     "[-b <baseaddr>][--userboot][-l][-V] filename");
 }
 
 static struct area_t *lookup_area(struct arealist_t *arealist,
@@ -63,25 +66,27 @@ static struct area_t *lookup_area(struct arealist_t *arealist,
 /* read raw binary */
 static int write_binary(FILE *fp, struct comm_t *com,
 			struct port_t *p, struct arealist_t *arealist,
-			enum mat_t mat)
+			enum mat_t mat, unsigned long base)
 {
 	int fno;
 	struct stat bin_st;
 	size_t bin_len, len;
 	unsigned int addr;
+	unsigned int offset;
 	struct area_t *area;
 
 	fno = fileno(fp);
 
 	fstat(fno, &bin_st);
 	bin_len = bin_st.st_size;
-	addr = arealist->area[0].start;
+	addr = base != 0 ? base : arealist->area[0].start;
 
 	while(bin_len > 0) {
 		area = lookup_area(arealist, addr);
 		len = bin_len < (area->end - area->start)?
 			bin_len:(area->end - area->start);
-		if (len > read(area->image, len, fno))
+		offset = addr - area->start;
+		if (len > read(fno, area->image + offset, len))
 			goto error_perror;
 		bin_len -= len;
 		addr += len;
@@ -109,12 +114,14 @@ static int write_srec(FILE *fp, struct comm_t *com,
 	static char linebuf[SREC_MAXLEN + 1];
 	char *lp;
 	char hexbuf[9];
+	char data[255];
 	int sum;
 	int len;
 	unsigned int addr;
-	const static int address_len[]={0,4,6,8,0,0,0,8,6,4};
-	int r = 0;
+	const static int address_len[]={4,4,6,8,0,4,6,8,6,4};
+	int ret = 0;
 	int l;
+	int type;
 	struct area_t *area;
 
 	while (fgets(linebuf, sizeof(linebuf), fp)) {
@@ -122,7 +129,10 @@ static int write_srec(FILE *fp, struct comm_t *com,
 		if (linebuf[0] != 'S' ||
 		    isdigit(linebuf[1]) == 0)
 			continue;
-		if (!(l = address_len[linebuf[1] & 0x0f]))
+		type = linebuf[1] - '0';
+		l = address_len[type];
+		if (type == 6 && l == 0)
+			/* S6 is skip */
 			continue;
 
 		/* get length */
@@ -144,13 +154,17 @@ static int write_srec(FILE *fp, struct comm_t *com,
 			sum += strtoul(hexbuf, NULL, 16);
 		}
 
-		area = lookup_area(arealist, addr);
-		if (area == NULL) {
-			fprintf(stderr, "%08x is out of ROM.", addr);
-			goto error;
+		if (type >=1 && type <=3) {
+			area = lookup_area(arealist, addr);
+			if (area == NULL) {
+				fprintf(stderr, "%08x is out of ROM.", addr);
+				ret = -1;
+				goto error;
+			}
+			bufp = area->image + addr - area->start;
+		} else {
+			bufp = data;
 		}
-		bufp = area->image + addr - area->start;
-
 		/* parse body */
 		for (; len > 1; --len, lp += 2, buff_size++) {
 			unsigned char d;
@@ -167,14 +181,18 @@ static int write_srec(FILE *fp, struct comm_t *com,
 		sum += strtoul(hexbuf, NULL, 16);
 		if ((sum & 0xff) != 0xff) {
 			fputs("\n" PROGNAME ": Checksum unmatch\n",stderr);
-			r = 0;
+			ret = -1;
 			goto error;
 		}
+		if (type = 0 && verbose)
+			printf("S0: %256s", data);
+		else if (type >= 4 && verbose)
+			printf("skip S%d record\n", type);
 	}
-	r = com->write_rom(p, arealist, mat);
+	ret = com->write_rom(p, arealist, mat);
  error:
 	fclose(fp);
-	return r;
+	return ret;
 }
 
 #ifdef HAVE_GELF_H
@@ -252,6 +270,7 @@ error:
 
 /* read rom writing data */
 static int writefile_to_rom(char *fn, int force_binary,
+			    unsigned long binbase,
 			    struct comm_t *com,
 			    struct port_t *port,
 			    struct arealist_t *arealist,
@@ -284,24 +303,21 @@ static int writefile_to_rom(char *fn, int force_binary,
 	if (!force_binary && memcmp(linebuf, ELFMAG, SELFMAG) == 0)
 		return write_elf(fp, com, port, arealist, mat);
 #endif
-	/* check 'S??' */
-	if (force_binary ||
-	    linebuf[0] != 'S' ||
-	    isdigit(linebuf[1]) == 0)
-		return write_binary(fp, com, port, arealist, mat);
-
-	/* check body (calcurate checksum) */
-	memcpy(hexbuf, &linebuf[2], 2);
-	sum = len = strtoul(hexbuf, NULL, 16);
-	for (p = &linebuf[4]; len > 0; --len, p += 2) {
-		memcpy(hexbuf, p, 2);
-		sum += strtoul(hexbuf, NULL, 16);
+	/* check 'S-record' */
+	if (!force_binary && linebuf[0] == 'S' && isdigit(linebuf[1])) {
+		/* check body (calcurate checksum) */
+		memcpy(hexbuf, &linebuf[2], 2);
+		sum = len = strtoul(hexbuf, NULL, 16);
+		for (p = &linebuf[4]; len > 0; --len, p += 2) {
+			memcpy(hexbuf, p, 2);
+			sum += strtoul(hexbuf, NULL, 16);
+		}
+		if ((sum & 0xff) == 0xff)
+			/* checksum ok. This file is S-record format */
+			return write_srec(fp, com, port, arealist, mat);
 	}
-	if ((sum & 0xff) == 0xff)
-		/* checksum ok is Srecord format */
-		return write_srec(fp, com, port, arealist, mat);
-	else
-		return write_binary(fp, com, port, arealist, mat);
+	/* binary file */
+	return write_binary(fp, com, port, arealist, mat, binbase);
 }
 
 /* get target rommap */
@@ -377,9 +393,10 @@ int main(int argc, char *argv[])
 	struct arealist_t *arealist;
 	enum mat_t mat = user;
 	char endian='l';
+	unsigned long binbase = 0;
 
 	/* parse argment */
-	while ((c = getopt_long(argc, argv, "p:f:bVle:", 
+	while ((c = getopt_long(argc, argv, "p:f:b::Vle:",
 				long_options, &long_index)) >= 0) {
 		switch (c) {
 		case 'u':
@@ -394,6 +411,8 @@ int main(int argc, char *argv[])
 			break ;
 		case 'b':
 			force_binary = 1;
+			if (optarg)
+				binbase = strtoul(optarg, NULL, 16);
 			break ;
 		case 'V':
 			verbose = 1;
@@ -468,11 +487,11 @@ int main(int argc, char *argv[])
 
 	if (!(arealist = get_rominfo(com, p, mat)))
 		goto error;
-		
-	r = writefile_to_rom(argv[optind], force_binary, 
+
+	r = writefile_to_rom(argv[optind], force_binary, binbase,
 			     com, p, arealist, mat);
  error:
-	puts((r==0)?"done":"write failed");
+	puts((r==0)?"done": "write failed");
 	if (p)
 		p->close();
 	return r;

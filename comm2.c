@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <stdint.h>
+#include <ctype.h>
 #include "h8flash.h"
 
 #define TRY1COUNT 60
